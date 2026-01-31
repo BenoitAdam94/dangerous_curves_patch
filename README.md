@@ -11,10 +11,10 @@ This changes EVERYTHING about our approach to fixing Dangerous Curves!
 ## What MAME Already Has
 
 ### Complete CPU Core:
-✅ **tms320c5x.cpp** - Full CPU implementation with all opcodes
-✅ **tms320c5x.h** - Complete device interface
-✅ **tms320c5x_dasm.cpp** - Disassembler for debugging
-✅ **320c5x_ops.ipp** - All instruction implementations
+✅ **tms320c5x.cpp** - Full CPU implementation with all opcodes  
+✅ **tms320c5x.h** - Complete device interface  
+✅ **tms320c5x_dasm.cpp** - Disassembler for debugging  
+✅ **320c5x_ops.ipp** - All instruction implementations  
 ✅ **320c5x_optable.cpp** - Opcode table
 
 ### Two Device Types:
