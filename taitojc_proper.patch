@@ -1,0 +1,25 @@
+--- taitojc.h.original	2026-01-31 12:00:00.000000000 +0000
++++ taitojc.h	2026-01-31 12:00:00.000000000 +0000
+@@ -12,6 +12,7 @@
+ 
+ #include "taitoio.h"
+ #include "tc0780fpa.h"
++#include "cpu/tms320c5x/taito_e07.h"
+ 
+ #include "emupal.h"
+ #include "screen.h"
+@@ -27,7 +28,7 @@ public:
+ 		, m_dsp(*this,"dsp")
+ 		, m_tc0640fio(*this, "tc0640fio")
+ 		, m_tc0780fpa(*this, "tc0780fpa")
+ 		, m_gfxdecode(*this, "gfxdecode")
+ 		, m_screen(*this, "screen")
+@@ -57,7 +58,7 @@ protected:
+ 
+ 	// device/memory pointers
+ 	required_device<cpu_device> m_maincpu;
+-	required_device<cpu_device> m_dsp;
++	required_device<taito_e07_device> m_dsp;
+ 	required_device<tc0640fio_device> m_tc0640fio;
+ 	required_device<tc0780fpa_device> m_tc0780fpa;
+ 	required_device<gfxdecode_device> m_gfxdecode;
