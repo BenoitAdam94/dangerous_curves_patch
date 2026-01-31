@@ -1,0 +1,22 @@
+--- taitojc.h.original	2026-01-31 12:00:00.000000000 +0000
++++ taitojc.h	2026-01-31 12:00:00.000000000 +0000
+@@ -93,6 +93,9 @@
+ 	uint8_t m_mcu_data_hc11 = 0;
+ 
+ 	bool m_has_dsp_hack = false;
++	
++	// Dangerous Curves DSP internal ROM hack
++	bool m_dsp_internal_rom_hack = false;
+ 
+ 	void coin_control_w(uint8_t data);
+ 
+@@ -128,6 +131,9 @@
+ 	uint16_t dsp_math_unk_r();
+ 
+ 	uint16_t taitojc_dsp_idle_skip_r();
++	
++	// Dangerous Curves DSP internal ROM stub handler
++	uint16_t dangcurv_dsp_internal_rom_r(offs_t offset);
+ 
+ 	void tile_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+ 	void char_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);

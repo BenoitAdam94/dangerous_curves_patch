@@ -1,0 +1,121 @@
+diff --git a/src/mame/taito/taitojc.h b/src/mame/taito/taitojc.h
+index 1234567..abcdefg 100644
+--- a/src/mame/taito/taitojc.h
++++ b/src/mame/taito/taitojc.h
+@@ -93,6 +93,9 @@ protected:
+ 	uint8_t m_mcu_data_hc11 = 0;
+ 
+ 	bool m_has_dsp_hack = false;
++	
++	// Dangerous Curves DSP internal ROM hack
++	bool m_dsp_internal_rom_hack = false;
+ 
+ 	void coin_control_w(uint8_t data);
+ 
+@@ -128,6 +131,9 @@ protected:
+ 	uint16_t dsp_math_unk_r();
+ 
+ 	uint16_t taitojc_dsp_idle_skip_r();
++	
++	// Dangerous Curves DSP internal ROM stub handler
++	uint16_t dangcurv_dsp_internal_rom_r(offs_t offset);
+ 
+ 	void tile_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+ 	void char_w(offs_t offset, uint32_t data, uint32_t mem_mask = ~0);
+diff --git a/src/mame/taito/taitojc.cpp b/src/mame/taito/taitojc.cpp
+index 1234567..abcdefg 100644
+--- a/src/mame/taito/taitojc.cpp
++++ b/src/mame/taito/taitojc.cpp
+@@ -858,10 +858,30 @@ void taitojc_state::dsp_rom_w(offs_t offset, uint16_t data)
+ 	}
+ }
+ 
++uint16_t taitojc_state::dangcurv_dsp_internal_rom_r(offs_t offset)
++{
++	// Stub implementation of TMS320C51 internal ROM for Dangerous Curves
++	// This allows the game to boot without the actual internal ROM dump
++	
++	// Handle interrupt vectors (0x0000-0x001F)
++	if (offset < 0x20)
++	{
++		if (offset == 0x0000) return 0xF495; // RESET vector - branch to user code
++		if (offset == 0x0001) return 0x2000; // RESET address
++		return 0xCE00; // RET for other interrupts
++	}
++	
++	// Fix for dead loop at 0x205b-0x205c
++	if (offset >= 0x205b && offset <= 0x205c)
++		return 0x7F00; // NOP instruction
++	
++	// Default: return RET to safely exit internal ROM calls
++	return 0xCE00; // RET instruction
++}
++
+ void taitojc_state::tms_program_map(address_map &map)
+ {
+-	map(0x0000, 0x1fff).ram().mirror(0x4000);
+-	map(0x6000, 0x7fff).ram();
++	// For Dangerous Curves, map internal ROM region
++	if (m_dsp_internal_rom_hack)
++	{
++		map(0x0000, 0x0fff).r(FUNC(taitojc_state::dangcurv_dsp_internal_rom_r));
++		map(0x1000, 0x1fff).ram();
++		map(0x2000, 0x3fff).ram();
++		map(0x6000, 0x7fff).ram();
++	}
++	else
++	{
++		// Original mapping for other games
++		map(0x0000, 0x1fff).ram().mirror(0x4000);
++		map(0x6000, 0x7fff).ram();
++	}
+ }
+ 
+ void taitojc_state::tms_data_map(address_map &map)
+@@ -1057,8 +1077,15 @@ void taitojc_state::machine_reset()
+ 	memset(m_projection_data, 0, sizeof(m_projection_data));
+ 	memset(m_intersection_data, 0, sizeof(m_intersection_data));
+ 
+-	// hold the TMS in reset until we have code
+-	m_dsp->set_input_line(INPUT_LINE_RESET, ASSERT_LINE);
++	// For Dangerous Curves with internal ROM hack, release DSP immediately
++	if (m_dsp_internal_rom_hack)
++	{
++		m_dsp->set_input_line(INPUT_LINE_RESET, CLEAR_LINE);
++	}
++	else
++	{
++		// hold the TMS in reset until we have code
++		m_dsp->set_input_line(INPUT_LINE_RESET, ASSERT_LINE);
++	}
+ }
+ 
+ void taitojc_state::machine_start()
+@@ -1066,6 +1093,7 @@ void taitojc_state::machine_start()
+ 	// register for savestates
+ 	save_item(NAME(m_dsp_rom_pos));
+ 	save_item(NAME(m_first_dsp_reset));
++	save_item(NAME(m_dsp_internal_rom_hack));
+ 	save_item(NAME(m_viewport_data));
+ 	save_item(NAME(m_projection_data));
+ 	save_item(NAME(m_intersection_data));
+@@ -1216,9 +1244,17 @@ void dendego_state::init_dendego2()
+ 
+ void taitojc_state::init_dangcurv()
+ {
+-	init_taitojc();
++	// Enable DSP internal ROM hack for Dangerous Curves
++	m_dsp_internal_rom_hack = true;
++	m_has_dsp_hack = true;
+ 
+-	m_has_dsp_hack = false;
++	if (DSP_IDLESKIP)
++		m_dsp->space(AS_DATA).install_read_handler(0x7ff0, 0x7ff0, read16smo_delegate(*this, FUNC(taitojc_state::taitojc_dsp_idle_skip_r)));
++	
++	// Log DSP activity for debugging
++	logerror("Dangerous Curves: DSP internal ROM hack enabled\n");
++	logerror("Note: 3D graphics may be incomplete due to missing internal ROM dump\n");
++	logerror("For perfect emulation, the internal ROM (e07-11.ic29) needs to be dumped from hardware\n");
+ }
+ 
+ 
