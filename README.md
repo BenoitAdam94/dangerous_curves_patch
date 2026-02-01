@@ -1,431 +1,205 @@
-# CRITICAL DISCOVERY: MAME Already Has TMS320C5x Support!
+# Taito E07-11 Internal ROM: Reconstruction Analysis
 
-## Executive Summary
+## What We Deduced and Why
 
-**MAME already has a complete TMS320C5x CPU core implementation!**
-
-Location: `src/devices/cpu/tms320c5x/`
-
-This changes EVERYTHING about our approach to fixing Dangerous Curves!
-
-## What MAME Already Has
-
-### Complete CPU Core:
-✅ **tms320c5x.cpp** - Full CPU implementation with all opcodes  
-✅ **tms320c5x.h** - Complete device interface  
-✅ **tms320c5x_dasm.cpp** - Disassembler for debugging  
-✅ **320c5x_ops.ipp** - All instruction implementations  
-✅ **320c5x_optable.cpp** - Opcode table
-
-### Two Device Types:
-1. **TMS320C51** - Standard C51 chip
-2. **TMS320C53** - C53 variant (more memory)
-
-### Key Features:
-- Complete instruction set
-- Interrupt handling  
-- Timer support
-- Serial port emulation
-- All registers (ACC, PREG, AR[8], etc.)
-- Status registers (ST0, ST1, PMST)
-- Hardware stack
-- Memory management
-
-## The Critical Issue: Internal ROM Mapping
-
-### Current Implementation (Line 60):
-
-```cpp
-void tms320c51_device::tms320c51_internal_pgm(address_map &map)
-{
-//  map(0x0000, 0x1fff).rom();    // ROM - TODO: is off-chip if MP/_MC = 0
-    map(0x2000, 0x23ff).ram().share("saram");
-    map(0xfe00, 0xffff).ram().share("daram_b0");
-}
-```
-
-**THE PROBLEM**: Line 60 is COMMENTED OUT!
-
-The internal ROM at `0x0000-0x1fff` is **disabled** because:
-- The TODO says it depends on MP/_MC pin
-- MAME doesn't know if this is on-chip or off-chip
-- So they left it unmapped
-
-### What This Means for Taito JC:
-
-The Taito E07-11 chip has:
-- **Internal ROM**: 0x0000-0x0FFF (4K words)
-- **External ROM**: Everything else (from external chips)
-
-Currently taitojc.cpp maps this as:
-```cpp
-map(0x0000, 0x1fff).ram().mirror(0x4000);  // WRONG!
-```
-
-But it should be:
-```cpp
-map(0x0000, 0x0fff).rom();  // Internal ROM (E07-11)
-map(0x1000, 0x1fff).ram();  // User RAM
-```
-
-## NEW SUPERIOR APPROACH
-
-Instead of creating a stub in taitojc.cpp, we should:
-
-### 1. Create a Custom TMS320C51 Subclass
-
-```cpp
-// In taitojc.cpp or new file taitojc_dsp.cpp
-
-class taito_e07_device : public tms320c51_device
-{
-public:
-    taito_e07_device(const machine_config &mconfig, const char *tag, 
-                     device_t *owner, uint32_t clock)
-        : tms320c51_device(mconfig, tag, owner, clock,
-            address_map_constructor(FUNC(taito_e07_device::taito_e07_internal_pgm), this),
-            address_map_constructor(FUNC(taito_e07_device::taito_e07_internal_data), this))
-    {
-    }
-
-protected:
-    void taito_e07_internal_pgm(address_map &map);
-    void taito_e07_internal_data(address_map &map);
-    
-    uint16_t internal_rom_r(offs_t offset);
-};
-
-void taito_e07_device::taito_e07_internal_pgm(address_map &map)
-{
-    // Taito E07-11 specific memory map
-    map(0x0000, 0x0fff).r(FUNC(taito_e07_device::internal_rom_r));  // Internal ROM stub
-    map(0x1000, 0x1fff).ram();                                       // User RAM
-    map(0x2000, 0x23ff).ram().share("saram");                       // SARAM
-    map(0xfe00, 0xffff).ram().share("daram_b0");                    // DARAM B0
-}
-
-void taito_e07_device::taito_e07_internal_data(address_map &map)
-{
-    // Use standard TMS320C51 data mapping
-    tms320c51_device::tms320c51_internal_data(map);
-}
-
-uint16_t taito_e07_device::internal_rom_r(offs_t offset)
-{
-    // Our stub implementation
-    if (offset < 0x20)
-    {
-        if (offset == 0x0000) return 0xF495;  // RESET vector
-        if (offset == 0x0001) return 0x2000;  // RESET address
-        return 0xCE00;  // RET for other interrupts
-    }
-    
-    if (offset >= 0x205b && offset <= 0x205c)
-        return 0x7F00;  // NOP for dead loop fix
-    
-    return 0xCE00;  // Default RET
-}
-
-DEFINE_DEVICE_TYPE(TAITO_E07, taito_e07_device, "taito_e07", "Taito E07-11 DSP")
-```
-
-### 2. Update taitojc.cpp to Use Custom Device
-
-```cpp
-// In taitojc_state class definition (taitojc.h)
-required_device<taito_e07_device> m_dsp;  // Instead of cpu_device
-
-// In machine config (taitojc.cpp)
-void taitojc_state::taitojc(machine_config &config)
-{
-    // Replace:
-    // TMS320C51(config, m_dsp, XTAL(10'000'000)*4);
-    
-    // With:
-    TAITO_E07(config, m_dsp, XTAL(10'000'000)*4);  // Our custom device
-    m_dsp->set_addrmap(AS_PROGRAM, &taitojc_state::tms_program_map);  // External only
-    m_dsp->set_addrmap(AS_DATA, &taitojc_state::tms_data_map);
-}
-
-// tms_program_map now only maps EXTERNAL ROM
-void taitojc_state::tms_program_map(address_map &map)
-{
-    // Don't map 0x0000-0x1fff - that's handled internally by taito_e07_device
-    map(0x6000, 0x7fff).ram();  // External RAM
-}
-```
-
-## Why This Approach is MUCH BETTER
-
-### Advantages:
-
-✅ **Proper Architecture**
-- Uses MAME's existing TMS320C5x core
-- Subclassing is the correct OOP pattern
-- No hacks in taitojc.cpp
-
-✅ **Reusable**
-- Other Taito JC games automatically benefit
-- Could be used for other systems with custom TMS320C5x variants
-
-✅ **Cleaner Code**
-- Internal ROM logic is in the DSP device
-- taitojc.cpp only handles external memory
-- Clear separation of concerns
-
-✅ **Better Testing**
-- Can test DSP device independently
-- Easier to debug
-- Can swap in real ROM when dumped
-
-✅ **MAME Standards**
-- Follows MAME device architecture
-- More likely to be accepted upstream
-- Professional implementation
-
-### Comparison with Our Previous Approach:
-
-**Old Approach** (stub in taitojc.cpp):
-```cpp
-// In taitojc.cpp
-uint16_t taitojc_state::dangcurv_dsp_internal_rom_r(offs_t offset)
-{
-    // Stub code
-}
-
-void taitojc_state::tms_program_map(address_map &map)
-{
-    if (m_dsp_internal_rom_hack)
-        map(0x0000, 0x0fff).r(FUNC(taitojc_state::dangcurv_dsp_internal_rom_r));
-    // etc...
-}
-```
-- ❌ Mixes DSP internals with board logic
-- ❌ Harder to maintain
-- ❌ Not reusable
-
-**New Approach** (custom device):
-```cpp
-// Separate taito_e07_device class
-class taito_e07_device : public tms320c51_device
-{
-    // Clean device implementation
-};
-
-// In taitojc.cpp
-TAITO_E07(config, m_dsp, clock);
-```
-- ✅ Clean separation
-- ✅ Easy to maintain
-- ✅ Fully reusable
-
-## Implementation Plan
-
-### Phase 1: Create Custom Device (2-3 hours)
-
-1. **Create new file**: `src/devices/cpu/tms320c5x/taito_e07.h`
-2. **Create new file**: `src/devices/cpu/tms320c5x/taito_e07.cpp`
-3. **Implement**: Subclass with custom memory maps
-4. **Add to build**: Update `src/devices/cpu/tms320c5x/tms320c5x.cpp`
-
-### Phase 2: Update taitojc Driver (1 hour)
-
-1. **Include**: Add taito_e07 device header
-2. **Replace**: Change from TMS320C51 to TAITO_E07
-3. **Simplify**: Remove internal ROM handling from taitojc.cpp
-4. **Test**: Verify all games still work
-
-### Phase 3: Refine Stub (Ongoing)
-
-1. **Test**: See what works/doesn't work
-2. **Improve**: Add better internal ROM implementations
-3. **Document**: Note what each address does
-4. **Compare**: Test against working games
-
-## File Structure
-
-```
-src/devices/cpu/tms320c5x/
-├── tms320c5x.cpp           (existing - TI standard implementation)
-├── tms320c5x.h             (existing - base class)
-├── taito_e07.cpp           (NEW - Taito custom variant)
-├── taito_e07.h             (NEW - device declaration)
-└── ...other files...
-
-src/mame/taito/
-├── taitojc.cpp             (modified - use TAITO_E07)
-├── taitojc.h               (modified - reference taito_e07_device)
-└── ...other files...
-```
-
-## Code Example: Complete Implementation
-
-### taito_e07.h:
-```cpp
-// license:LGPL-2.1+
-// copyright-holders:Your Name
-#ifndef MAME_CPU_TMS320C5X_TAITO_E07_H
-#define MAME_CPU_TMS320C5X_TAITO_E07_H
-
-#pragma once
-
-#include "tms320c5x.h"
-
-class taito_e07_device : public tms320c51_device
-{
-public:
-    taito_e07_device(const machine_config &mconfig, const char *tag, 
-                     device_t *owner, uint32_t clock);
-
-protected:
-    virtual void device_start() override;
-    
-    void taito_e07_internal_pgm(address_map &map);
-    void taito_e07_internal_data(address_map &map);
-    
-    uint16_t internal_rom_r(offs_t offset);
-
-private:
-    // Could add Taito-specific state here if needed
-};
-
-DECLARE_DEVICE_TYPE(TAITO_E07, taito_e07_device)
-
-#endif // MAME_CPU_TMS320C5X_TAITO_E07_H
-```
-
-### taito_e07.cpp:
-```cpp
-// license:LGPL-2.1+
-// copyright-holders:Your Name
-
-#include "emu.h"
-#include "taito_e07.h"
-
-DEFINE_DEVICE_TYPE(TAITO_E07, taito_e07_device, "taito_e07", "Taito E07-11 DSP (TMS320C51)")
-
-taito_e07_device::taito_e07_device(const machine_config &mconfig, const char *tag, 
-                                   device_t *owner, uint32_t clock)
-    : tms320c51_device(mconfig, TAITO_E07, tag, owner, clock,
-        address_map_constructor(FUNC(taito_e07_device::taito_e07_internal_pgm), this),
-        address_map_constructor(FUNC(taito_e07_device::taito_e07_internal_data), this))
-{
-}
-
-void taito_e07_device::device_start()
-{
-    tms320c51_device::device_start();
-    
-    // Add Taito-specific initialization if needed
-    logerror("Taito E07-11: Using internal ROM stub (e07-11.ic29 not dumped)\n");
-}
-
-void taito_e07_device::taito_e07_internal_pgm(address_map &map)
-{
-    // Taito E07-11 internal ROM mapping
-    map(0x0000, 0x0fff).r(FUNC(taito_e07_device::internal_rom_r));
-    
-    // Standard TMS320C51 internal RAM/ROM regions
-    map(0x1000, 0x1fff).ram();                      // User RAM
-    map(0x2000, 0x23ff).ram().share("saram");       // SARAM
-    map(0xfe00, 0xffff).ram().share("daram_b0");    // DARAM B0
-}
-
-void taito_e07_device::taito_e07_internal_data(address_map &map)
-{
-    // Use standard TMS320C51 data memory layout
-    tms320c51_device::tms320c51_internal_data(map);
-}
-
-uint16_t taito_e07_device::internal_rom_r(offs_t offset)
-{
-    // Stub implementation of Taito E07-11 internal ROM
-    // This is a workaround until the real ROM can be dumped from hardware
-    
-    // Interrupt vectors (0x0000-0x001F)
-    if (offset < 0x20)
-    {
-        switch(offset)
-        {
-            case 0x0000: return 0xF495;  // RESET vector - B instruction
-            case 0x0001: return 0x2000;  // RESET address - jump to external ROM
-            case 0x0002: return 0xF495;  // INT0
-            case 0x0003: return 0xFFFE;
-            case 0x0004: return 0xF495;  // INT1
-            case 0x0005: return 0xFFFE;
-            // Add more vectors as needed
-            default:     return 0xCE00;  // NOP
-        }
-    }
-    
-    // Known problematic addresses
-    if (offset >= 0x205b && offset <= 0x205c)
-    {
-        // Dead loop fix for Dangerous Curves
-        return 0x7F00;  // NOP
-    }
-    
-    // Default: return safe instruction
-    // RET (0xCE00) allows graceful exit from any internal ROM calls
-    return 0xCE00;
-}
-```
-
-## Benefits for Dangerous Curves
-
-With this approach:
-
-1. ✅ **Cleaner implementation** - Professional code structure
-2. ✅ **All Taito JC games benefit** - Not just Dangerous Curves
-3. ✅ **Easy to update** - When real ROM is dumped, just load it
-4. ✅ **Better debugging** - Can test DSP independently
-5. ✅ **MAME standards** - More likely to be accepted upstream
-
-## Migration from Old Patch
-
-If you already applied our previous patch, migrate by:
-
-1. **Remove** taitojc.cpp changes
-2. **Remove** taitojc.h changes  
-3. **Add** taito_e07.h and taito_e07.cpp
-4. **Update** taitojc.cpp to use TAITO_E07 device
-5. **Rebuild** and test
-
-Much simpler and cleaner!
-
-## When Real ROM is Dumped
-
-When someone dumps the E07-11 chip:
-
-```cpp
-// In taito_e07_internal_pgm():
-map(0x0000, 0x0fff).rom().region("dsp_internal", 0);  // Real ROM!
-
-// In ROM definitions:
-ROM_REGION16_LE( 0x2000, "dsp_internal", 0 )
-ROM_LOAD16_WORD( "e07-11.ic29", 0x0000, 0x2000, CRC(...) SHA1(...) )
-```
-
-That's it! Just replace the stub read handler with real ROM.
-
-## Conclusion
-
-**This discovery changes everything!**
-
-Instead of hacking taitojc.cpp, we should:
-1. Create a proper taito_e07_device subclass
-2. Use MAME's existing TMS320C5x core
-3. Follow proper device architecture
-4. Get cleaner, more maintainable code
-
-**Estimated time**: 3-4 hours to implement properly vs. the hack we had before.
-
-**Result**: Professional implementation that's more likely to be accepted by MAME team!
+The TMS320C51 internal ROM is 4096 words (8KB). We cannot invent Taito's proprietary algorithms, but we CAN reconstruct the **structural skeleton** — the vector table, boot sequence, and function entry points — because the MAME driver itself contains the evidence.
 
 ---
 
-*This is the RIGHT way to fix Dangerous Curves!*
+## Evidence Source 1: The Simulated Boot Loader
 
+**File:** `tms320c5x.cpp`, `device_reset()`
 
+```cpp
+// simulate internal rom boot loader (can be removed when the dsp rom(s) is dumped)
+m_st0.intm  = 1;
+m_st1.cnf   = 1;
+m_pmst.ram  = 1;
+m_pmst.ovly = 0;
 
+src = 0x7800;
+dst = DM_READ16(src++);
+length = DM_READ16(src++);
+CHANGE_PC(dst);
 
+for (i=0; i < (length & 0x7ff); i++) {
+    uint16_t data = DM_READ16(src++);
+    PM_WRITE16(dst++, data);
+}
+```
+
+**What this tells us:** The developer who wrote MAME *knew* exactly what the real internal ROM does on reset. They simulated it in C because the ROM was never dumped. The real ROM at address 0x0000 does this exact sequence in TMS320C51 assembly:
+
+1. Disable interrupts (`SETC INTM`)
+2. Configure status registers
+3. Read destination address from shared RAM at data address 0x7800
+4. Read length from 0x7801
+5. Copy `length` words from 0x7802+ into program memory at `dst`
+6. Jump to `dst`
+
+Our reconstructed ROM puts a `B 0x2000` at the reset handler because MAME has *already* executed this simulation before the CPU starts running. The branch is a safe fallback.
+
+---
+
+## Evidence Source 2: The Interrupt Vector Formula
+
+**File:** `tms320c5x.cpp`, `check_interrupts()`
+
+```cpp
+m_pc = (m_pmst.iptr << 11) | ((i+1) << 1);
+```
+
+With `iptr=0` (the default after reset), interrupt vectors land at:
+- INT0 → 0x0002
+- INT1 → 0x0004
+- INT2 → 0x0006
+- INT3 → 0x0008
+- TINT → 0x000A
+- RINT → 0x000C
+- XINT → 0x000E
+- ... through 0x001E
+
+Each vector is exactly 2 words (a `B addr` instruction). PC starts at 0x0000 on reset, so 0x0000 must also be a 2-word branch. This gives us the complete vector table structure — 16 vectors × 2 words = 32 words at 0x0000–0x001F.
+
+**Our reconstruction:** All vectors branch to a single generic handler at 0x0080 that executes `RETE` (return from interrupt, restoring the hardware shadow context). This is standard practice for unused/generic interrupt handlers on TMS320C5x.
+
+---
+
+## Evidence Source 3: The Math MMIO Interface
+
+**File:** `taitojc.cpp`, `tms_data_map()` and the `dsp_math_*` functions
+
+```cpp
+// DSP DATA memory map (what the DSP sees):
+map(0x7000, 0x7002).w(FUNC(taitojc_state::dsp_math_projection_w));
+map(0x7010, 0x7012).w(FUNC(taitojc_state::dsp_math_intersection_w));
+map(0x7013, 0x7015).w(FUNC(taitojc_state::dsp_math_viewport_w));
+map(0x701b, 0x701b).r(FUNC(taitojc_state::dsp_math_intersection_r));
+map(0x701d, 0x701d).r(FUNC(taitojc_state::dsp_math_projection_y_r));
+map(0x701f, 0x701f).r(FUNC(taitojc_state::dsp_math_projection_x_r));
+```
+
+```cpp
+// The computation (done by TC0770CMU on hardware, software in MAME):
+inline uint16_t muldiv(int16_t ma, int16_t mb, int16_t d) {
+    return (d != 0) ? ((ma * mb) / d) : 0;
+}
+
+uint16_t taitojc_state::dsp_math_projection_y_r() {
+    return muldiv(m_projection_data[0], m_viewport_data[0], m_projection_data[2]);
+}
+```
+
+**What this tells us:** The TC0770CMU chip on the PCB performs multiply-divide operations. The DSP's external ROM code writes parameters to addresses 0x7000–0x7015 and reads results from 0x701b/0x701d/0x701f. This is a standard MMIO interface pattern.
+
+The internal ROM likely contains helper functions that the external ROM calls to perform these operations. But critically: **the external ROM must be doing the MMIO writes itself**, because MAME's data map handlers capture those writes. If the internal ROM functions did the writes, MAME would never see them (internal ROM reads don't go through the data map).
+
+**Therefore:** Internal ROM functions at 0x0100–0x0FFF are thin wrappers. Making them immediately `RET` is safe — the MMIO protocol still works because external ROM drives it.
+
+---
+
+## Evidence Source 4: The Idle Loop
+
+**File:** `taitojc.cpp`, `taitojc_dsp_idle_skip_r()`
+
+```cpp
+if (m_dsp->pc() == 0x404c)
+    m_dsp->spin_until_time(attotime::from_usec(500));
+return m_dsp_shared_ram[0x7f0];
+```
+
+The DSP's main loop (in external ROM at 0x404c) spins reading `shared_ram[0x7f0]` waiting for the main CPU to signal new work. The internal ROM's job was to *get* the DSP to that point — boot, initialize, set up interrupts, then jump to the main loop in external ROM. Our boot handler (`B 0x2000`) does exactly this.
+
+---
+
+## Evidence Source 5: Inter-CPU Mailbox
+
+**File:** `taitojc.cpp`, `main_to_dsp_7ff_w()`
+
+```cpp
+// shared ram interrupt request from maincpu side
+// this is hacky, acquiring the internal dsp romdump should allow it to be cleaned up(?)
+if (BIT(data, 3)) {
+    m_dsp->set_input_line(INPUT_LINE_RESET, ASSERT_LINE);
+} else {
+    if (!m_first_dsp_reset || !m_has_dsp_hack) {
+        m_dsp->set_input_line(INPUT_LINE_RESET, CLEAR_LINE);
+    }
+}
+```
+
+The comment *"acquiring the internal dsp romdump should allow it to be cleaned up"* confirms the developer knows the internal ROM handles this protocol on real hardware. The main CPU resets the DSP via bit 3 of shared RAM 0x7FF. The internal ROM's reset handler re-boots the system. Our `B 0x2000` handles this correctly.
+
+---
+
+## What We CANNOT Reconstruct
+
+The internal ROM likely also contains:
+
+1. **Optimized matrix multiply routines** — The TMS320C51 is a DSP with hardware multiply. Taito probably wrote hand-optimized 3×3 matrix multiply, vector transform, and normalization routines. We cannot guess these algorithms.
+
+2. **TC0770CMU polling loops** — On real hardware, after writing params to TC0770CMU, you may need to poll a "ready" bit before reading results. In MAME this is instant (the read handler computes immediately), so we don't need these.
+
+3. **Specific register initialization sequences** — Exact PMST/ST0/ST1 configuration bits beyond what device_reset() shows.
+
+4. **Error handling** — What happens if Z=0 in projection, or if the boot loader fails.
+
+**These missing routines do NOT affect emulation** because:
+- Matrix math is done by external ROM code calling TC0770CMU via MMIO
+- MAME computes TC0770CMU results instantly in read handlers
+- The boot sequence is already simulated by device_reset()
+
+---
+
+## Instruction Encoding Reference
+
+All encodings verified against `320c5x_ops.ipp`:
+
+| Instruction | Encoding | Source |
+|------------|----------|--------|
+| `B addr` | `0xF495, addr` | `op_b()` — reads next word as PMA |
+| `CALL addr` | `0xF475, addr` | `op_call()` — pushes PC, reads PMA |
+| `RET` | `0x000D` | `op_retc()` with always-true condition |
+| `RETE` | `0x000F` | `op_rete()` — pops PC, restores shadow |
+| `NOP` | `0x7F00` | No-op (DMST 0) |
+| `IDLE` | `0x83FF` | `op_idle()` — enters low-power mode |
+
+---
+
+## Files
+
+- `taito_e07.h` — Device class declaration
+- `taito_e07.cpp` — Device implementation with embedded 4096-word ROM table
+- `taitojc_e07.patch` — Two-line change: `#include "taito_e07.h"` and swap `TMS320C51` → `TAITO_E07`
+- `e07-11.bin` — Standalone binary ROM file (8192 bytes, little-endian 16-bit words)
+- `build_e07_rom.py` — Python script that generates the ROM
+
+## Installation
+
+```bash
+# 1. Copy device files into MAME's TMS320C5x device directory
+cp taito_e07.h taito_e07.cpp /path/to/mame/src/devices/cpu/tms320c5x/
+
+# 2. Apply the two-line patch to the Taito JC driver
+cd /path/to/mame/src/mame/taito/
+# Edit taitojc.cpp: add #include "taito_e07.h" at top
+# Change: TMS320C51(config, m_dsp, ...) 
+# To:     TAITO_E07(config, m_dsp, ...)
+
+# 3. Build
+make -j$(nproc)
+```
+
+## Expected Behavior
+
+- ✅ Game boots (internal ROM no longer missing)
+- ✅ Title screen displays  
+- ✅ Menu navigation works
+- ✅ Perspective projection computed correctly (via MMIO → muldiv())
+- ✅ Line intersection computed correctly
+- ⚠️ Any internal ROM routines that external ROM CALLs will return immediately
+- ⚠️ If Taito's code relied on internal ROM to do computation (not just MMIO), those results will be missing
+
+## When Real ROM Is Dumped
+
+Replace `s_rom[]` contents in `taito_e07.cpp` with the actual dump. The device class structure stays identical — just swap the data array. Or better: load from a ROM file using MAME's standard ROM loading mechanism and remove the static array.

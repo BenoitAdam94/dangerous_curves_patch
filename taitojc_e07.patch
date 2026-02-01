@@ -1,0 +1,16 @@
+--- taitojc.cpp.orig
++++ taitojc.cpp
+@@ -1,6 +1,7 @@
+ // license:LGPL-2.1+
+ // copyright-holders:Ville Linde, Angelo Salese, hap
++#include "taito_e07.h"
+ /*...
+  * (rest of header unchanged)
+  */
+@@ -1117,7 +1118,7 @@
+ 	// ... HC11, palette, etc unchanged ...
+ 
+-	TMS320C51(config, m_dsp, XTAL(10'000'000)*4); // 40MHz
++	TAITO_E07(config, m_dsp, XTAL(10'000'000)*4); // 40MHz, uses reconstructed internal ROM
+ 	m_dsp->set_addrmap(AS_PROGRAM, &taitojc_state::tms_program_map);
+ 	m_dsp->set_addrmap(AS_DATA, &taitojc_state::tms_data_map);
